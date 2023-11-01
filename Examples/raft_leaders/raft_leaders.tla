@@ -11,7 +11,7 @@ CONSTANTS Nil
 CONSTANTS Follower, Candidate, Leader
 
 \* Message types:
-CONSTANTS RequestVoteRequest, RequestVoteResponse
+CONSTANTS RequestVoteRequest, RequestVoteResponse, Heartbeat
 
 ----
 \* Global variables
@@ -53,9 +53,6 @@ vars == <<messages, serverVars, candidateVars>>
 \* important property is that every quorum overlaps with every other.
 Quorum == {i \in SUBSET(Server) : Cardinality(i) * 2 > Cardinality(Server)}
 
-\* The term of the last entry in a log, or 0 if the log is empty.
-LastTerm(xlog) == IF Len(xlog) = 0 THEN 0 ELSE xlog[Len(xlog)].term
-
 \* Helper for Send and Reply. Given a message m and bag of messages, return a
 \* new bag of messages with one more m in it.
 WithMessage(m, msgs) ==
@@ -90,22 +87,11 @@ Reply(response, request) ==
     messages' = WithoutMessage(request, WithMessage(response, messages))
 
 ----
-\* Define initial values for all variables
 
-InitServerVars == /\ currentTerm = [i \in Server |-> 1]
-                  /\ state       = [i \in Server |-> Follower]
-                  /\ votedFor    = [i \in Server |-> Nil]
-InitCandidateVars == /\ votesGranted   = [i \in Server |-> {}]
-
-Init == /\ messages = [m \in {} |-> 0]
-        /\ InitServerVars
-        /\ InitCandidateVars
-
-----
 \* Define state transitions
 
 \* Server i restarts from stable storage.
-\* It loses everything but its currentTerm, votedFor, and log.
+\* It loses everything but its currentTerm, votedFor.
 Restart(i) ==
     /\ state'          = [state EXCEPT ![i] = Follower]
     /\ votesGranted'   = [votesGranted EXCEPT ![i] = {}]
@@ -114,12 +100,11 @@ Restart(i) ==
 \* Server i times out and starts a new election.
 Timeout(i) == /\ state[i] \in {Follower, Candidate}
               /\ state' = [state EXCEPT ![i] = Candidate]
-              /\ currentTerm' = [currentTerm EXCEPT ![i] = currentTerm[i] + 1]
               \* Most implementations would probably just set the local vote
               \* atomically, but messaging localhost for it is weaker.
               /\ votedFor' = [votedFor EXCEPT ![i] = Nil]
               /\ votesGranted'   = [votesGranted EXCEPT ![i] = {}]
-              /\ UNCHANGED <<messages>>
+              /\ UNCHANGED <<messages, currentTerm>>
 
 \* Candidate i sends j a RequestVote request.
 RequestVote(i,j) ==
@@ -129,13 +114,23 @@ RequestVote(i,j) ==
              msource       |-> i,
              mdest         |-> j])
     /\ UNCHANGED <<serverVars, votesGranted>>
+    
+SendHeartbeat(i,j) ==
+    /\ state[i] = Leader
+    /\ Send([mtype         |-> Heartbeat,
+             mterm         |-> currentTerm[i],
+             msource       |-> i,
+             mdest         |-> j])
+    /\ UNCHANGED <<serverVars, votesGranted>>
 
 \* Candidate i transitions to leader.
 BecomeLeader(i) ==
     /\ state[i] = Candidate
     /\ votesGranted[i] \in Quorum
+    /\ currentTerm' = [currentTerm EXCEPT ![i] = currentTerm[i] + 1]
     /\ state'      = [state EXCEPT ![i] = Leader]
-    /\ UNCHANGED <<messages, currentTerm, votedFor, candidateVars>>
+    /\ UNCHANGED <<messages, votedFor, candidateVars>>
+   
 
 ----
 \* Message handlers
@@ -170,6 +165,10 @@ HandleRequestVoteResponse(i, j, m) ==
           /\ UNCHANGED <<votesGranted>>
     /\ Discard(m)
     /\ UNCHANGED <<serverVars, votedFor>>
+    
+HandleHeartbeat(m) ==
+    /\ Discard(m)
+    /\ UNCHANGED <<serverVars, candidateVars>>
 
 \* Any RPC with a newer term causes the recipient to advance its term first.
 UpdateTerm(i, j, m) ==
@@ -198,6 +197,8 @@ Receive(m) ==
        \/ /\ m.mtype = RequestVoteResponse
           /\ \/ DropStaleResponse(i, j, m)
              \/ HandleRequestVoteResponse(i, j, m)
+       \/ /\ m.mtype = Heartbeat
+          /\ HandleHeartbeat(m)
              
 
 
@@ -216,10 +217,23 @@ DropMessage(m) ==
     /\ UNCHANGED <<serverVars, candidateVars>>
 
 ----
+\* Define initial values for all variables
+
+InitServerVars == /\ currentTerm = [i \in Server |-> 1]
+                  /\ state       = [i \in Server |-> Follower]
+                  /\ votedFor    = [i \in Server |-> Nil]
+InitCandidateVars == /\ votesGranted = [i \in Server |-> {}]
+
+Init == /\ messages = [m \in {} |-> 0]
+        /\ InitServerVars
+        /\ InitCandidateVars
+
+----
 \* Defines how the variables may transition.
 Next == /\ \/ \E i \in Server : Restart(i)
            \/ \E i \in Server : Timeout(i)
            \/ \E i, j \in Server : RequestVote(i, j)
+           \/ \E i, j \in Server : SendHeartbeat(i, j)
            \/ \E i \in Server : BecomeLeader(i)
            \/ \E m \in ValidMessage(messages) : Receive(m)
            \/ \E m \in SingleMessage(messages) : DuplicateMessage(m)
@@ -238,5 +252,5 @@ MoreThanOneLeader ==
     
 =============================================================================
 \* Modification History
-\* Last modified Fri Aug 11 00:37:45 NOVT 2023 by andrey
+\* Last modified Wed Nov 01 17:13:24 NOVT 2023 by andrey
 \* Created Tue Jul 25 16:06:28 NOVT 2023 by andrey
