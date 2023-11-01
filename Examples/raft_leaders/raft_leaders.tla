@@ -1,4 +1,4 @@
------------------------------ MODULE pg_leader -----------------------------
+----------------------------- MODULE raft_leaders -----------------------------
 
 EXTENDS Naturals, FiniteSets, Sequences, TLC
 
@@ -100,11 +100,12 @@ Restart(i) ==
 \* Server i times out and starts a new election.
 Timeout(i) == /\ state[i] \in {Follower, Candidate}
               /\ state' = [state EXCEPT ![i] = Candidate]
+              /\ currentTerm' = [currentTerm EXCEPT ![i] = currentTerm[i] + 1]
               \* Most implementations would probably just set the local vote
               \* atomically, but messaging localhost for it is weaker.
               /\ votedFor' = [votedFor EXCEPT ![i] = Nil]
               /\ votesGranted'   = [votesGranted EXCEPT ![i] = {}]
-              /\ UNCHANGED <<messages, currentTerm>>
+              /\ UNCHANGED <<messages>>
 
 \* Candidate i sends j a RequestVote request.
 RequestVote(i,j) ==
@@ -127,9 +128,8 @@ SendHeartbeat(i,j) ==
 BecomeLeader(i) ==
     /\ state[i] = Candidate
     /\ votesGranted[i] \in Quorum
-    /\ currentTerm' = [currentTerm EXCEPT ![i] = currentTerm[i] + 1]
     /\ state'      = [state EXCEPT ![i] = Leader]
-    /\ UNCHANGED <<messages, votedFor, candidateVars>>
+    /\ UNCHANGED <<messages, currentTerm, votedFor, candidateVars>>
    
 
 ----
@@ -247,8 +247,8 @@ BothLeader( i, j ) ==
     /\ state[i] = Leader
     /\ state[j] = Leader
 
-MoreThanOneLeader ==
-    \E i, j \in Server :  BothLeader( i, j ) 
+NoMoreThanOneLeader ==
+    ~\E i, j \in Server :  BothLeader( i, j ) 
     
 =============================================================================
 \* Modification History
