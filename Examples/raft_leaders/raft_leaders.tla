@@ -16,7 +16,6 @@ CONSTANTS RequestVoteRequest, RequestVoteResponse, Heartbeat
 ----
 \* Global variables
 
-
 \* A bag of records representing requests and responses sent from one server
 \* to another. This is a function mapping Message to Nat.
 VARIABLE messages
@@ -101,8 +100,6 @@ Restart(i) ==
 Timeout(i) == /\ state[i] \in {Follower, Candidate}
               /\ state' = [state EXCEPT ![i] = Candidate]
               /\ currentTerm' = [currentTerm EXCEPT ![i] = currentTerm[i] + 1]
-              \* Most implementations would probably just set the local vote
-              \* atomically, but messaging localhost for it is weaker.
               /\ votedFor' = [votedFor EXCEPT ![i] = Nil]
               /\ votesGranted'   = [votesGranted EXCEPT ![i] = {}]
               /\ UNCHANGED <<messages>>
@@ -166,9 +163,12 @@ HandleRequestVoteResponse(i, j, m) ==
     /\ Discard(m)
     /\ UNCHANGED <<serverVars, votedFor>>
     
-HandleHeartbeat(m) ==
+HandleHeartbeat(i, j, m) ==
+    /\ m.mterm = currentTerm[i]
+    /\ state[i] \in {Follower, Candidate}
+    /\ state' = [state EXCEPT ![i] = Follower]
     /\ Discard(m)
-    /\ UNCHANGED <<serverVars, candidateVars>>
+    /\ UNCHANGED <<votedFor, currentTerm, candidateVars>>
 
 \* Any RPC with a newer term causes the recipient to advance its term first.
 UpdateTerm(i, j, m) ==
@@ -198,7 +198,7 @@ Receive(m) ==
           /\ \/ DropStaleResponse(i, j, m)
              \/ HandleRequestVoteResponse(i, j, m)
        \/ /\ m.mtype = Heartbeat
-          /\ HandleHeartbeat(m)
+          /\ HandleHeartbeat(i, j, m)
              
 
 
@@ -219,7 +219,7 @@ DropMessage(m) ==
 ----
 \* Define initial values for all variables
 
-InitServerVars == /\ currentTerm = [i \in Server |-> 1]
+InitServerVars == /\ currentTerm = [i \in Server |-> 1] 
                   /\ state       = [i \in Server |-> Follower]
                   /\ votedFor    = [i \in Server |-> Nil]
 InitCandidateVars == /\ votesGranted = [i \in Server |-> {}]
@@ -233,8 +233,8 @@ Init == /\ messages = [m \in {} |-> 0]
 Next == /\ \/ \E i \in Server : Restart(i)
            \/ \E i \in Server : Timeout(i)
            \/ \E i, j \in Server : RequestVote(i, j)
-           \/ \E i, j \in Server : SendHeartbeat(i, j)
            \/ \E i \in Server : BecomeLeader(i)
+           \/ \E i, j \in Server : SendHeartbeat(i, j)
            \/ \E m \in ValidMessage(messages) : Receive(m)
            \/ \E m \in SingleMessage(messages) : DuplicateMessage(m)
            \/ \E m \in ValidMessage(messages) : DropMessage(m)
